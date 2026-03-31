@@ -81,6 +81,15 @@ if old1 not in src:
 src = src.replace(old1, new1, 1)
 print('[*] Patch 1 (db8 cache fix): applied')
 
+# Patch 1b: ignore meta user messages in fingerprint selection
+old1b = 'function FA9(A){let q=A.find((_)=>_.type==\"user\");'
+new1b = 'function FA9(A){let q=A.find((_)=>_.type==\"user\"&&!(\"isMeta\"in _&&_.isMeta));'
+if old1b in src:
+    src = src.replace(old1b, new1b, 1)
+    print('[*] Patch 1b (fingerprint meta skip): applied')
+else:
+    print('[*] Patch 1b: pattern not found, skipping (non-critical)')
+
 # Patch 2: force 1h cache TTL
 old2 = 'function sjY(A){if(QA()===\"bedrock\"'
 new2 = 'function sjY(A){return!0;if(QA()===\"bedrock\"'

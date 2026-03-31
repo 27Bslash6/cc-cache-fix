@@ -42,15 +42,14 @@ if [ "$PATCHED_VERSION" != "$VERSION (Claude Code)" ]; then
     exit 1
 fi
 
-# 6. Link wrapper
-WRAPPER="$BASE/bin/claude-patched"
-chmod +x "$WRAPPER"
-if [ ! -L "$HOME/.local/bin/claude-patched" ]; then
-    ln -s "$WRAPPER" "$HOME/.local/bin/claude-patched"
-    echo "[*] Linked claude-patched -> ~/.local/bin/"
-else
-    echo "[*] claude-patched symlink already exists"
-fi
+# 6. Create wrapper
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/claude-patched" << WRAPPER
+#!/usr/bin/env bash
+exec node "$CLI_JS" "\$@"
+WRAPPER
+chmod +x "$HOME/.local/bin/claude-patched"
+echo "[*] Wrote ~/.local/bin/claude-patched"
 
 echo ""
 echo "Done. Run 'claude-patched' to use the patched version."
