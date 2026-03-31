@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+.claude/handoff.md
+plan.md
+
+node/node_modules/@anthropic-ai/claude-code/cli.js.orig
+Claude-code-cache-fix/Claude code source code .zip
