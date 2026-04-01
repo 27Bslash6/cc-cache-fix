@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Claude Code Cache Fix Installer
+# Claude Code Cache Fix Installer (macOS)
 # Patches cli.js to fix prompt caching bugs that drain Max plan usage.
 # Safe to run multiple times. Stock 'claude' is never touched.
+#
+# Uses patches/apply-patches.py which has regex + semantic fallbacks
+# for reliable patching across different minified code versions.
 
 VERSION="2.1.81"
 BASE="$HOME/cc-cache-fix"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PATCH_SCRIPT="$SCRIPT_DIR/patches/apply-patches.py"
 
 echo "========================================"
 echo "  Claude Code Cache Fix Installer"
@@ -22,8 +27,6 @@ if ! command -v node &>/dev/null; then
         brew install node
     else
         echo "    Install Node.js first: https://nodejs.org or 'brew install node'"
-        echo "    Press any key to exit."
-        read -n1
         exit 1
     fi
 fi
@@ -32,16 +35,25 @@ echo "[*] Node.js: $(node --version)"
 # Check for npm
 if ! command -v npm &>/dev/null; then
     echo "[!] npm not found. Install Node.js properly."
-    echo "    Press any key to exit."
-    read -n1
     exit 1
 fi
 
 # Check for python3
 if ! command -v python3 &>/dev/null; then
     echo "[!] python3 not found. Install Python 3 first."
-    echo "    Press any key to exit."
-    read -n1
+    exit 1
+fi
+
+# Check for patch script
+if [ ! -f "$PATCH_SCRIPT" ]; then
+    echo "[!] Patch script not found at: $PATCH_SCRIPT"
+    echo "    Run this script from the repo root."
+    exit 1
+fi
+
+# Check for python3
+if ! command -v python3 &>/dev/null; then
+    echo "[!] python3 not found. Install Python 3 first."
     exit 1
 fi
 
@@ -70,52 +82,9 @@ fi
 echo "[*] Restoring from backup..."
 cp "$CLI.orig" "$CLI"
 
-# Apply patches
+# Apply patches using apply-patches.py (has regex + semantic fallbacks)
 echo "[*] Applying patches..."
-python3 -c "
-import sys
-path = '$CLI'
-with open(path) as f: src = f.read()
-
-# Patch 1: fix db8 attachment filter (resume cache regression)
-old1 = 'if(A.attachment.type==\"hook_additional_context\"&&a6(process.env.CLAUDE_CODE_SAVE_HOOK_ADDITIONAL_CONTEXT))return!0;return!1}'
-new1 = old1.replace('return!1}',
-    'if(A.attachment.type==\"deferred_tools_delta\")return!0;'
-    'if(A.attachment.type==\"mcp_instructions_delta\")return!0;'
-    'return!1}')
-if old1 not in src:
-    print('[!] Patch 1 FAILED: db8 pattern not found. Wrong version?')
-    sys.exit(1)
-src = src.replace(old1, new1, 1)
-print('[*] Patch 1 (db8 cache fix): applied')
-
-# Patch 1b: ignore meta user messages in fingerprint selection
-old1b = 'function FA9(A){let q=A.find((_)=>_.type==\"user\");'
-new1b = 'function FA9(A){let q=A.find((_)=>_.type==\"user\"&&!(\"isMeta\"in _&&_.isMeta));'
-if old1b in src:
-    src = src.replace(old1b, new1b, 1)
-    print('[*] Patch 1b (fingerprint meta skip): applied')
-else:
-    print('[*] Patch 1b: pattern not found, skipping (non-critical)')
-
-# Patch 2: force 1h cache TTL
-old2 = 'function sjY(A){if(QA()===\"bedrock\"'
-new2 = 'function sjY(A){return!0;if(QA()===\"bedrock\"'
-if old2 in src:
-    src = src.replace(old2, new2, 1)
-    print('[*] Patch 2 (1h cache TTL): applied')
-else:
-    print('[*] Patch 2: sjY not found, skipping (non-critical)')
-
-with open(path, 'w') as f: f.write(src)
-
-# Verify
-with open(path) as f: check = f.read()
-if 'deferred_tools_delta' not in check:
-    print('[!] Verification FAILED')
-    sys.exit(1)
-print('[*] Verification: patches confirmed')
-"
+python3 "$PATCH_SCRIPT" "$CLI"
 
 # Verify it runs
 PATCHED_VERSION=$(node "$CLI" --version 2>/dev/null || echo "FAILED")
@@ -124,8 +93,6 @@ echo "[*] Patched version: $PATCHED_VERSION"
 if [[ "$PATCHED_VERSION" != *"$VERSION"* ]]; then
     echo "[!] Version check failed. Restoring backup."
     cp "$CLI.orig" "$CLI"
-    echo "    Press any key to exit."
-    read -n1
     exit 1
 fi
 
@@ -172,6 +139,3 @@ echo "    claude-patched --resume <session-id>"
 echo ""
 echo "  Stock 'claude' command is untouched."
 echo "========================================"
-echo ""
-echo "Press any key to close."
-read -n1
