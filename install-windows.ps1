@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Version = "2.1.81"
+$Version = "2.1.90"
 $Base = Split-Path -Parent $MyInvocation.MyCommand.Path
 $NodeDir = Join-Path $Base "node"
 $CliPath = Join-Path $NodeDir "node_modules/@anthropic-ai/claude-code/cli.js"
@@ -38,18 +38,27 @@ if (-not (Test-Path -Path $PatchScript)) {
     throw "Patch script not found: $PatchScript"
 }
 
-if (-not (Test-Path -Path $CliPath)) {
+function Get-CliVersion([string]$Path) {
+    if (Test-Path -Path $Path) {
+        return (& node $Path --version 2>$null).Trim()
+    }
+    return ""
+}
+
+$InstalledVersion = Get-CliVersion $CliPath
+if ($InstalledVersion -ne "$Version (Claude Code)") {
     Write-Host "[*] Installing @anthropic-ai/claude-code@$Version..."
     npm install --prefix $NodeDir "@anthropic-ai/claude-code@$Version" | Out-Host
 } else {
-    Write-Host "[*] cli.js already installed"
+    Write-Host "[*] cli.js already installed at target version"
 }
 
-if (-not (Test-Path -Path $CliBackup)) {
+$BackupVersion = Get-CliVersion $CliBackup
+if ($BackupVersion -ne "$Version (Claude Code)") {
     Write-Host "[*] Backing up cli.js -> cli.js.orig"
     Copy-Item -Path $CliPath -Destination $CliBackup
 } else {
-    Write-Host "[*] Backup already exists"
+    Write-Host "[*] Backup already matches target version"
 }
 
 Write-Host "[*] Restoring from backup..."

@@ -3,7 +3,14 @@ set -euo pipefail
 
 BASE="$(cd "$(dirname "$0")" && pwd)"
 CLI_JS="$BASE/node/node_modules/@anthropic-ai/claude-code/cli.js"
-VERSION="2.1.81"
+VERSION="2.1.90"
+
+get_cli_version() {
+    local path="$1"
+    if [ -f "$path" ]; then
+        node "$path" --version 2>/dev/null || true
+    fi
+}
 
 echo "=== Claude Code Cache Fix installer ==="
 echo "Base: $BASE"
@@ -22,19 +29,21 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # 1. npm install if needed
-if [ ! -f "$CLI_JS" ]; then
+INSTALLED_VERSION="$(get_cli_version "$CLI_JS")"
+if [ "$INSTALLED_VERSION" != "$VERSION (Claude Code)" ]; then
     echo "[*] Installing @anthropic-ai/claude-code@$VERSION..."
     npm install --prefix "$BASE/node" "@anthropic-ai/claude-code@$VERSION"
 else
-    echo "[*] cli.js already installed"
+    echo "[*] cli.js already installed at target version"
 fi
 
 # 2. Backup if needed
-if [ ! -f "$CLI_JS.orig" ]; then
+BACKUP_VERSION="$(get_cli_version "$CLI_JS.orig")"
+if [ "$BACKUP_VERSION" != "$VERSION (Claude Code)" ]; then
     echo "[*] Backing up cli.js -> cli.js.orig"
     cp "$CLI_JS" "$CLI_JS.orig"
 else
-    echo "[*] Backup already exists"
+    echo "[*] Backup already matches target version"
 fi
 
 # 3. Restore from backup before patching (idempotent)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Claude Code Cache Fix — Universal Patcher
-Finds and patches the cache-breaking db8 function regardless of version.
+Finds and patches cache-breaking Claude Code logic across multiple versions.
 Self-diagnosing, verbose, works on macOS and Linux.
 """
 
@@ -99,8 +99,30 @@ def patch_db8(source: str) -> tuple[str, bool]:
     """
 
     patch_marker = 'type==="deferred_tools_delta"'
-    if patch_marker in source:
+    if patch_marker in source and 'type==="mcp_instructions_delta"' in source:
         log("Patch 1 (db8 cache fix): already applied")
+        return source, True
+
+    newer_filter = re.search(
+        r'if\(\w+\.type==="attachment"&&\w+\(\)!=="ant"\)\{'
+        r'if\(\w+\.attachment\.type==="hook_additional_context".*?'
+        r'if\(\w+\.attachment\.type==="hook_deferred_tool"\)return!0;'
+        r'return!1\}',
+        source,
+    )
+    if newer_filter:
+        log("Patch 1 (db8 cache fix): not needed on this build (new attachment filter)")
+        return source, True
+
+    newer_filter_with_cache = re.search(
+        r'if\(\w+\.type==="attachment"&&\w+\(\)!=="ant"\)\{'
+        r'(?:(?!return!1\}).)*\w+\.attachment\.type==="deferred_tools_delta"'
+        r'(?:(?!return!1\}).)*\w+\.attachment\.type==="mcp_instructions_delta"'
+        r'(?:(?!return!1\}).)*return!1\}',
+        source,
+    )
+    if newer_filter_with_cache:
+        log("Patch 1 (db8 cache fix): already present in this build")
         return source, True
 
     # Strategy 1: exact match on the key substring
@@ -222,6 +244,64 @@ def patch_fingerprint_meta(source: str) -> tuple[str, bool]:
     return source, False
 
 
+def patch_cache_breakpoints(source: str) -> tuple[str, bool]:
+    """
+    Patch 1c: move the single transcript cache marker earlier for 2.1.89+.
+
+    Newer Claude Code versions mark only the tail transcript message, which is
+    usually the current user turn and therefore changes every request. That
+    causes large cache_creation_input_tokens on each turn. We keep a single
+    transcript cache marker, but move it to the previous message so the prefix
+    can be reused without exceeding Anthropic's 4-block cache_control limit.
+    """
+
+    exact = (
+        "let A=O?q.length-2:q.length-1,"
+        "w=q.map((J,M)=>{let X=M===A;"
+        'if(J.type==="user")return jxY(J,X,K,_);'
+        "return HxY(J,X,K,_)})"
+    )
+    replacement = (
+        "let A=O?q.length-2:q.length-2,"
+        "w=q.map((J,M)=>{let X=M===A;"
+        'if(J.type==="user")return jxY(J,X,K,_);'
+        "return HxY(J,X,K,_)})"
+    )
+
+    if replacement in source:
+        log("Patch 1c (earlier cache marker): already applied")
+        return source, True
+
+    log("Patch 1c: trying exact match...")
+    if exact in source:
+        source = source.replace(exact, replacement, 1)
+        log("Patch 1c (earlier cache marker): applied via exact match")
+        return source, True
+
+    log("Patch 1c: exact match failed, trying regex...")
+    pattern = re.compile(
+        r"let (?P<target>\w+)=(?P<skip>\w+)\?(?P<arr>\w+)\.length-2:(?P=arr)\.length-1,"
+        r"(?P<mapped>\w+)=(?P=arr)\.map\(\((?P<item>\w+),(?P<idx>\w+)\)=>\{"
+        r"let (?P<flag>\w+)=(?:(?P=idx)===(?P=target)|"
+        r"(?P=skip)\?(?P=idx)>=(?P=arr)\.length-\d+&&(?P=idx)<(?P=arr)\.length-1:"
+        r"(?P=idx)>(?P=arr)\.length-\d+);"
+    )
+    match = pattern.search(source)
+    if match:
+        g = match.groupdict()
+        replacement = (
+            f"let {g['target']}={g['skip']}?{g['arr']}.length-2:{g['arr']}.length-2,"
+            f"{g['mapped']}={g['arr']}.map(({g['item']},{g['idx']})=>{{"
+            f"let {g['flag']}={g['idx']}==={g['target']};"
+        )
+        source = source[:match.start()] + replacement + source[match.end():]
+        log("Patch 1c (earlier cache marker): applied via regex")
+        return source, True
+
+    log("Patch 1c FAILED: could not find the tail cache breakpoint logic")
+    return source, False
+
+
 def patch_ttl(source: str) -> tuple[str, bool]:
     """
     Patch 2: Force 1-hour cache TTL.
@@ -230,8 +310,11 @@ def patch_ttl(source: str) -> tuple[str, bool]:
     feature flag. We make it always return true.
     """
 
-    # Check if already patched (return!0 right after function opening)
-    if re.search(r'function \w+\(\w+\)\{return!0;if\(\w+\(\)==="bedrock"', source):
+    # Check if already patched (return!0 right after the gate function opening)
+    if re.search(
+        r'function \w+\(\w+\)\{return!0;if\(\w+\(\)==="bedrock"&&\w+\(process\.env\.ENABLE_PROMPT_CACHING_1H_BEDROCK\)',
+        source,
+    ) or re.search(r'function \w+\(\w+\)\{return!0;if\(\w+\(\)==="bedrock"', source):
         log("Patch 2 (1h cache TTL): already applied")
         return source, True
 
@@ -243,11 +326,17 @@ def patch_ttl(source: str) -> tuple[str, bool]:
         log("Patch 2 (1h cache TTL): applied via exact match")
         return source, True
 
-    # Strategy 2: regex for any function name, find by bedrock + ttl context
+    exact_new = 'function OxY(q){if(T7()==="bedrock"'
+    if exact_new in source:
+        source = source.replace(exact_new, 'function OxY(q){return!0;if(T7()==="bedrock"', 1)
+        log("Patch 2 (1h cache TTL): applied via exact new-match")
+        return source, True
+
+    # Strategy 2: regex for any function name, find by the 1h gate env var.
     log("Patch 2: exact match failed, trying regex...")
     pattern = re.compile(
         r'(function \w+\(\w+\)\{)'
-        r'(if\(\w+\(\)==="bedrock".*?ttl.*?1h)'
+        r'(if\(\w+\(\)==="bedrock"&&\w+\(process\.env\.ENABLE_PROMPT_CACHING_1H_BEDROCK\))'
     )
     match = pattern.search(source)
     if match:
@@ -256,21 +345,19 @@ def patch_ttl(source: str) -> tuple[str, bool]:
         log("Patch 2 (1h cache TTL): applied via regex")
         return source, True
 
-    # Strategy 3: find by the ttl:"1h" string nearby bedrock check
+    # Strategy 3: find the env-var gate and patch the enclosing function.
     log("Patch 2: regex failed, trying semantic search...")
-    idx = source.find('ttl:"1h"')
+    idx = source.find("ENABLE_PROMPT_CACHING_1H_BEDROCK")
     if idx == -1:
-        idx = source.find("ttl:'1h'")
-    if idx == -1:
-        log("Patch 2: no ttl:1h found in source, skipping (non-critical)")
+        log("Patch 2: no 1h gate env var found in source, skipping (non-critical)")
         return source, False
 
     # Walk backwards to find the function declaration
-    region = source[max(0, idx - 500):idx]
+    region = source[max(0, idx - 300):idx]
     func_match = list(re.finditer(r'function \w+\(\w+\)\{', region))
     if func_match:
         last = func_match[-1]
-        abs_pos = max(0, idx - 500) + last.end()
+        abs_pos = max(0, idx - 300) + last.end()
         source = source[:abs_pos] + "return!0;" + source[abs_pos:]
         log("Patch 2 (1h cache TTL): applied via semantic search")
         return source, True
@@ -371,6 +458,7 @@ def main() -> int:
 
     source, p1_ok = patch_db8(source)
     source, p1b_ok = patch_fingerprint_meta(source)
+    source, p1c_ok = patch_cache_breakpoints(source)
     source, p2_ok = patch_ttl(source)
 
     if not p1_ok:
@@ -402,6 +490,7 @@ def main() -> int:
     print("  Patches applied:")
     print(f"    [{'OK' if p1_ok else 'FAIL'}] db8 cache fix (resume regression)")
     print(f"    [{'OK' if p1b_ok else 'SKIP'}] fingerprint meta skip (resume first-turn stability)")
+    print(f"    [{'OK' if p1c_ok else 'SKIP'}] earlier cache marker (2.1.89+ write-heavy regression)")
     print(f"    [{'OK' if p2_ok else 'SKIP'}] 1h cache TTL")
     print()
     print("  Run: claude-patched")

@@ -103,35 +103,42 @@ def classify_resume_cache(stats: dict) -> str:
     broken: little/no reuse on resumed turns
     inconclusive: transport/API errors or no usable token stats
     """
-    usable: list[dict] = []
-    for key in ("resume", "consecutive"):
-        row = stats.get(key) or {}
-        if row.get("api_error"):
-            continue
-        if row.get("ratio") is None:
-            continue
-        usable.append(row)
+    def row_status(row: dict) -> str | None:
+        if not row or row.get("api_error") or row.get("ratio") is None:
+            return None
 
-    if not usable:
-        return "inconclusive"
+        read = int(row.get("cache_read", 0))
+        creation = int(row.get("cache_creation", 0))
+        ratio = float(row.get("ratio", 0.0))
 
-    reads = [int(r.get("cache_read", 0)) for r in usable]
-    creations = [int(r.get("cache_creation", 0)) for r in usable]
-    ratios = [float(r.get("ratio", 0.0)) for r in usable]
+        # Newer Claude Code builds can show some cache reads while still
+        # rewriting tens of thousands of cache tokens every resumed turn.
+        if creation >= 20000 and ratio < 0.35 and read >= 2000:
+            return "write_heavy"
 
-    # Strong failure signature: no read reuse and significant creation volume.
-    if max(reads) == 0 and max(creations) >= 5000:
+        if read == 0 and creation >= 5000:
+            return "broken"
+
+        if ratio >= 0.65 and read >= 8000:
+            return "healthy"
+
+        if ratio >= 0.40 and read >= 2000:
+            return "degraded"
+
         return "broken"
 
-    # Healthy: clear read-dominant ratio and non-trivial cached prefix.
-    if max(ratios) >= 0.65 and sum(reads) >= 8000:
-        return "healthy"
+    resume = stats.get("resume") or {}
+    consecutive = stats.get("consecutive") or {}
 
-    # Degraded but useful: partial read reuse is present.
-    if max(ratios) >= 0.40 and max(reads) >= 2000:
-        return "degraded"
+    resume_status = row_status(resume)
+    if resume_status is not None:
+        return resume_status
 
-    return "broken"
+    consecutive_status = row_status(consecutive)
+    if consecutive_status is not None:
+        return consecutive_status
+
+    return "inconclusive"
 
 
 def find_session_jsonl(session_id: str) -> str | None:
@@ -464,6 +471,15 @@ def main():
             print(f"    Resume cache_read={cr:,}, cache_creation={cc:,}, read_ratio={ratio_txt}")
             print(f"    Likely saving usage, but not at full efficiency.")
             print(f"    Issue reference: https://github.com/anthropics/claude-code/issues/34629")
+        elif resume_status == "write_heavy":
+            print(f"  ✗ RESUME CACHE: WRITE-HEAVY")
+            cr = stats.get("resume", {}).get("cache_read", 0)
+            cc = stats.get("resume", {}).get("cache_creation", 0)
+            ratio = stats.get("resume", {}).get("ratio")
+            ratio_txt = f"{ratio:.1%}" if isinstance(ratio, float) else "n/a"
+            print(f"    Resume cache_read={cr:,}, cache_creation={cc:,}, read_ratio={ratio_txt}")
+            print(f"    Some cache is reused, but large cache writes still happen every turn.")
+            print(f"    This matches the 2.1.89+ write-heavy regression class.")
         elif resume_status == "broken":
             print(f"  ✗ RESUME CACHE: BROKEN")
             cr = stats.get("resume", {}).get("cache_read", 0)
@@ -488,7 +504,7 @@ def main():
 
         # Overall
         print(f"{'─' * 60}")
-        bugs = (replaced is True) + (resume_status == "broken")
+        bugs = (replaced is True) + (resume_status in ("broken", "write_heavy"))
         inconclusive = (replaced is None) or (resume_status == "inconclusive")
         if bugs == 0:
             if inconclusive:

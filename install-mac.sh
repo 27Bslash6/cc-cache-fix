@@ -8,10 +8,17 @@ set -euo pipefail
 # Uses patches/apply-patches.py which has regex + semantic fallbacks
 # for reliable patching across different minified code versions.
 
-VERSION="2.1.81"
+VERSION="2.1.90"
 BASE="$HOME/cc-cache-fix"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_SCRIPT="$SCRIPT_DIR/patches/apply-patches.py"
+
+get_cli_version() {
+    local path="$1"
+    if [ -f "$path" ]; then
+        node "$path" --version 2>/dev/null || true
+    fi
+}
 
 echo "========================================"
 echo "  Claude Code Cache Fix Installer"
@@ -63,19 +70,21 @@ cd "$BASE"
 
 # Install npm package
 CLI="$BASE/node_modules/@anthropic-ai/claude-code/cli.js"
-if [ ! -f "$CLI" ]; then
+INSTALLED_VERSION="$(get_cli_version "$CLI")"
+if [ "$INSTALLED_VERSION" != "$VERSION (Claude Code)" ]; then
     echo "[*] Installing @anthropic-ai/claude-code@${VERSION}..."
     npm install "@anthropic-ai/claude-code@${VERSION}"
 else
-    echo "[*] cli.js already installed"
+    echo "[*] cli.js already installed at target version"
 fi
 
 # Backup
-if [ ! -f "$CLI.orig" ]; then
+BACKUP_VERSION="$(get_cli_version "$CLI.orig")"
+if [ "$BACKUP_VERSION" != "$VERSION (Claude Code)" ]; then
     echo "[*] Backing up cli.js"
     cp "$CLI" "$CLI.orig"
 else
-    echo "[*] Backup exists"
+    echo "[*] Backup already matches target version"
 fi
 
 # Restore from backup (idempotent)
